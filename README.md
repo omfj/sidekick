@@ -35,17 +35,31 @@ sidekick
 
 ### Options
 
-| Flag           | Env                   | Default                        |
-| -------------- | --------------------- | ------------------------------ |
-| `--model`      | `SIDEKICK_MODEL`      | `anthropic/claude-opus-5.5`    |
-| `--base-url`   | `SIDEKICK_BASE_URL`   | `https://openrouter.ai/api/v1` |
-| `--effort`     | `SIDEKICK_EFFORT`     | provider default               |
-| `--idle`       | `SIDEKICK_IDLE`       | `10s`                          |
-| `--max-wait`   | `SIDEKICK_MAX_WAIT`   | `1m`                           |
-| `--cost-every` | `SIDEKICK_COST_EVERY` | `10m` (`0` = off)              |
-| `--notify`     | `SIDEKICK_NOTIFY`     | off                            |
+| Flag           | Env                   | Config key   | Default                          |
+| -------------- | --------------------- | ------------ | -------------------------------- |
+| `--model`      | `SIDEKICK_MODEL`      | `model`      | `anthropic/claude-opus-5.5`      |
+| `--base-url`   | `SIDEKICK_BASE_URL`   | `base_url`   | `https://openrouter.ai/api/v1`   |
+| `--effort`     | `SIDEKICK_EFFORT`     | `effort`     | provider default                 |
+| `--idle`       | `SIDEKICK_IDLE`       | `idle`       | `10s`                            |
+| `--max-wait`   | `SIDEKICK_MAX_WAIT`   | `max_wait`   | `1m`                             |
+| `--cost-every` | `SIDEKICK_COST_EVERY` | `cost_every` | `3m` (`0` = off)                 |
+| `--notify`     | `SIDEKICK_NOTIFY`     | `notify`     | off                              |
+|                | `SIDEKICK_API_KEY`    | `api_key`    |                                  |
+| `--config`     | `SIDEKICK_CONFIG`     |              | `~/.config/sidekick/config.toml` |
 
 `--notify` sends a desktop notification through your terminal with OSC 777 (same as Ghostty).
+
+### Config file
+
+To keep settings between runs, put them in `~/.config/sidekick/config.toml` (or
+`$XDG_CONFIG_HOME/sidekick/config.toml`). Every key is optional:
+
+```toml
+api_key = "sk-or-..."
+model = "anthropic/claude-opus-5.5"
+idle = "30s"
+notify = true
+```
 
 Durations take `s`/`sec`/`secs` or `m`/`min`/`mins`, e.g. `30s` or `5mins`. Saves are batched: a
 review runs once you've stopped saving for `--idle`.

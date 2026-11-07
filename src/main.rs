@@ -1,4 +1,5 @@
 mod chat;
+mod config;
 mod desktop;
 mod duration;
 mod render;
@@ -30,61 +31,109 @@ struct Args {
     #[arg(default_value = ".")]
     path: PathBuf,
 
-    /// Model to review with (any model your provider serves).
-    #[arg(
-        long,
-        env = "SIDEKICK_MODEL",
-        default_value = "anthropic/claude-opus-5.5"
-    )]
-    model: String,
+    /// Config file to read [default: ~/.config/sidekick/config.toml].
+    #[arg(long, env = "SIDEKICK_CONFIG")]
+    config: Option<PathBuf>,
 
-    /// OpenAI-compatible API base URL (OpenRouter, OpenAI, Ollama, LM Studio, ...).
-    #[arg(
-        long,
-        env = "SIDEKICK_BASE_URL",
-        default_value = "https://openrouter.ai/api/v1"
-    )]
-    base_url: String,
+    /// Model to review with (any model your provider serves) [default: anthropic/claude-opus-5.5].
+    #[arg(long, env = "SIDEKICK_MODEL")]
+    model: Option<String>,
+
+    /// OpenAI-compatible API base URL (OpenRouter, OpenAI, Ollama, LM Studio, ...)
+    /// [default: https://openrouter.ai/api/v1].
+    #[arg(long, env = "SIDEKICK_BASE_URL")]
+    base_url: Option<String>,
 
     /// Reasoning effort to request (low, medium, high), if the model supports it.
     #[arg(long, env = "SIDEKICK_EFFORT")]
     effort: Option<String>,
 
     /// Review once you've stopped saving for this long (e.g. 10s, 1m). Saves
-    /// within the window are batched into one review to save API calls.
-    #[arg(long, env = "SIDEKICK_IDLE", default_value = "10s")]
-    idle: TimeDuration,
+    /// within the window are batched into one review to save API calls [default: 10s].
+    #[arg(long, env = "SIDEKICK_IDLE")]
+    idle: Option<TimeDuration>,
 
-    /// Never hold a batch longer than this, even if you keep saving.
-    #[arg(long, env = "SIDEKICK_MAX_WAIT", default_value = "1m")]
-    max_wait: TimeDuration,
+    /// Never hold a batch longer than this, even if you keep saving [default: 1m].
+    #[arg(long, env = "SIDEKICK_MAX_WAIT")]
+    max_wait: Option<TimeDuration>,
 
-    /// How often to print the session's API cost (0 to disable).
-    #[arg(long, env = "SIDEKICK_COST_EVERY", default_value = "3m")]
-    cost_every: TimeDuration,
+    /// How often to print the session's API cost (0 to disable) [default: 3m].
+    #[arg(long, env = "SIDEKICK_COST_EVERY")]
+    cost_every: Option<TimeDuration>,
 
     /// Send a desktop notification when a review has suggestions.
     #[arg(long, env = "SIDEKICK_NOTIFY")]
     notify: bool,
 }
 
+/// Settings after merging flags, env vars, the config file and defaults.
+struct Settings {
+    api_key: String,
+    model: String,
+    base_url: String,
+    effort: Option<String>,
+    idle: TimeDuration,
+    max_wait: TimeDuration,
+    cost_every: TimeDuration,
+    notify: bool,
+}
+
+impl Settings {
+    fn resolve(args: &Args) -> Result<Self> {
+        let config = config::Config::load(args.config.as_deref())?;
+        let duration = |s: &str| s.parse::<TimeDuration>().expect("valid default");
+        let api_key = std::env::var("SIDEKICK_API_KEY")
+            .or_else(|_| std::env::var("OPENROUTER_API_KEY"))
+            .ok()
+            .or(config.api_key)
+            .unwrap_or_default(); // local servers like Ollama don't need one
+        Ok(Self {
+            api_key,
+            model: args
+                .model
+                .clone()
+                .or(config.model)
+                .unwrap_or_else(|| "anthropic/claude-opus-5.5".into()),
+            base_url: args
+                .base_url
+                .clone()
+                .or(config.base_url)
+                .unwrap_or_else(|| "https://openrouter.ai/api/v1".into()),
+            effort: args.effort.clone().or(config.effort),
+            idle: args.idle.or(config.idle).unwrap_or(duration("10s")),
+            max_wait: args.max_wait.or(config.max_wait).unwrap_or(duration("1m")),
+            cost_every: args
+                .cost_every
+                .or(config.cost_every)
+                .unwrap_or(duration("3m")),
+            notify: args.notify || config.notify.unwrap_or(false),
+        })
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
+    let settings = Settings::resolve(&args)?;
     let root = args
         .path
         .canonicalize()
         .context("watch path does not exist")?;
     trust::ensure_allowed(&root)?;
 
-    let api_key = std::env::var("SIDEKICK_API_KEY")
-        .or_else(|_| std::env::var("OPENROUTER_API_KEY"))
-        .unwrap_or_default(); // local servers like Ollama don't need one
-    if api_key.is_empty() && args.base_url.contains("openrouter.ai") {
-        anyhow::bail!("set OPENROUTER_API_KEY (or SIDEKICK_API_KEY) to your OpenRouter key");
+    if settings.api_key.is_empty() && settings.base_url.contains("openrouter.ai") {
+        anyhow::bail!(
+            "set OPENROUTER_API_KEY (or SIDEKICK_API_KEY), or `api_key` in {}, to your OpenRouter key",
+            config::default_path()?.display()
+        );
     }
 
     let mut snapshot = Snapshot::new(&root);
-    let client = ChatClient::new(args.base_url, api_key, args.model.clone(), args.effort)?;
+    let client = ChatClient::new(
+        settings.base_url,
+        settings.api_key,
+        settings.model.clone(),
+        settings.effort,
+    )?;
     let mut reviewer = Reviewer::new(client);
 
     let (tx, rx) = mpsc::channel();
@@ -96,7 +145,7 @@ fn main() -> Result<()> {
         "sidekick watching {} ({} files) with {} — go write some code!",
         root.display(),
         snapshot.tracked_count(),
-        args.model
+        settings.model
     ));
     let guidelines = review::guideline_files(&snapshot);
     if !guidelines.is_empty() {
@@ -106,14 +155,14 @@ fn main() -> Result<()> {
         ));
     }
 
-    let mut cost_timer = CostTimer::new(args.cost_every);
+    let mut cost_timer = CostTimer::new(settings.cost_every);
 
     loop {
         let paths = wait_for_batch(
             &rx,
             &snapshot,
-            args.idle.get(),
-            args.max_wait.get(),
+            settings.idle.get(),
+            settings.max_wait.get(),
             &mut || cost_timer.tick(reviewer.usage()),
         )?;
 
@@ -137,7 +186,7 @@ fn main() -> Result<()> {
             Ok(review) if review.suggestions.is_empty() => render::all_good(&names),
             Ok(review) => {
                 review.suggestions.iter().for_each(render::suggestion);
-                if args.notify {
+                if settings.notify {
                     desktop::notify_review(&review.suggestions);
                 }
             }
