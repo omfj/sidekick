@@ -7,9 +7,6 @@ use serde::Deserialize;
 
 use crate::duration::TimeDuration;
 
-/// Settings from `config.toml`.
-///
-/// Every field is optional. Flags and env vars override whatever is set here.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {

@@ -8,9 +8,11 @@ use crate::chat::Usage;
 use crate::review::{Severity, Suggestion};
 
 static LAST_WAS_COST: AtomicBool = AtomicBool::new(false);
+static LIVE_LINE: AtomicBool = AtomicBool::new(false);
 
 fn printed_other() {
     LAST_WAS_COST.store(false, Ordering::Relaxed);
+    clear_live();
 }
 
 pub fn last_was_cost() -> bool {
@@ -50,6 +52,29 @@ fn safe_line(text: &str) -> String {
 pub fn status(msg: &str) {
     printed_other();
     println!("{DIM}· {}{RESET}", safe_line(msg));
+}
+
+/// A status line that is redrawn in place.
+pub fn live_status(msg: &str, first: bool) {
+    let mut stdout = io::stdout();
+    if !stdout.is_terminal() {
+        if first {
+            status(msg);
+        }
+        return;
+    }
+    LAST_WAS_COST.store(false, Ordering::Relaxed);
+    LIVE_LINE.store(true, Ordering::Relaxed);
+    let _ = write!(stdout, "\r{DIM}· {}{RESET}\x1b[K", safe_line(msg));
+    let _ = stdout.flush();
+}
+
+pub fn clear_live() {
+    if LIVE_LINE.swap(false, Ordering::Relaxed) {
+        let mut stdout = io::stdout();
+        let _ = write!(stdout, "\r\x1b[K");
+        let _ = stdout.flush();
+    }
 }
 
 pub fn tool(desc: &str) {
@@ -94,10 +119,7 @@ pub fn suggestion(s: &Suggestion) {
     }
 }
 
-/// An animated status line shown while waiting on something slow.
-///
-/// It lives on its own line and is erased when dropped, so drop it before printing.
-/// Does nothing when stdout isn't a terminal.
+/// Erased when dropped.
 pub struct Spinner {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,

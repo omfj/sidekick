@@ -66,7 +66,6 @@ struct Args {
     notify: bool,
 }
 
-/// Settings after merging flags, env vars, the config file and defaults.
 struct Settings {
     api_key: String,
     model: String,
@@ -220,33 +219,41 @@ fn wait_for_batch(
         }
     }
 
-    let names: Vec<_> = paths
-        .iter()
-        .map(|p| snapshot.relative(p).display().to_string())
-        .collect();
-    render::status(&format!(
-        "noticed {}; reviewing after {}s without saves",
-        names.join(", "),
-        idle.as_secs()
-    ));
-
     let first = Instant::now();
     let mut last = first;
+    let mut first_show = true;
     loop {
         let deadline = (last + idle).min(first + max_wait);
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+        let Some(remaining) = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|r| !r.is_zero())
+        else {
             break;
         };
-        match rx.recv_timeout(remaining) {
+
+        let secs = remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0);
+        let names: Vec<_> = paths
+            .iter()
+            .map(|p| snapshot.relative(p).display().to_string())
+            .collect();
+        render::live_status(
+            &format!("noticed {}; reviewing in {secs}s", names.join(", ")),
+            first_show,
+        );
+        first_show = false;
+
+        let until_next_tick = remaining.saturating_sub(Duration::from_secs(secs - 1));
+        match rx.recv_timeout(until_next_tick) {
             Ok(events) => {
                 if collect(events, snapshot, &mut paths) {
                     last = Instant::now();
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => anyhow::bail!("file watcher stopped"),
         }
     }
+    render::clear_live();
     Ok(paths)
 }
 
