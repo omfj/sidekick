@@ -1,4 +1,8 @@
+use std::io::{self, IsTerminal, Write};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use crate::chat::Usage;
 use crate::review::{Severity, Suggestion};
@@ -87,6 +91,55 @@ pub fn suggestion(s: &Suggestion) {
     if !s.hint.trim().is_empty() {
         let hint: Vec<_> = s.hint.lines().map(safe).collect();
         println!("  {c}hint:{RESET} {}", hint.join("\n        "));
+    }
+}
+
+/// An animated status line shown while waiting on something slow.
+///
+/// It lives on its own line and is erased when dropped, so drop it before printing.
+/// Does nothing when stdout isn't a terminal.
+pub struct Spinner {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+pub fn spinner(msg: &str) -> Spinner {
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread = io::stdout().is_terminal().then(|| {
+        let stop = stop.clone();
+        let msg = safe_line(msg);
+        thread::spawn(move || {
+            const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let start = Instant::now();
+            let mut stdout = io::stdout();
+            for frame in FRAMES.iter().cycle() {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let secs = start.elapsed().as_secs();
+                let elapsed = if secs > 0 {
+                    format!(" {secs}s")
+                } else {
+                    String::new()
+                };
+                let _ = write!(stdout, "\r{DIM}{frame} {msg}{elapsed}{RESET}\x1b[K");
+                let _ = stdout.flush();
+                thread::park_timeout(Duration::from_millis(80));
+            }
+            let _ = write!(stdout, "\r\x1b[K");
+            let _ = stdout.flush();
+        })
+    });
+    Spinner { stop, thread }
+}
+
+impl Drop for Spinner {
+    fn drop(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            self.stop.store(true, Ordering::Relaxed);
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
     }
 }
 

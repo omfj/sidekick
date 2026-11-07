@@ -114,12 +114,15 @@ impl Reviewer {
         ];
 
         for round in 0..=MAX_TOOL_ROUNDS {
-            let message = self.client.chat(ChatRequest {
-                messages: &messages,
-                tools: Some(tools::definitions()),
-                tools_allowed: round < MAX_TOOL_ROUNDS,
-                schema: Some(("review", review_schema())),
-            })?;
+            let message = {
+                let _spinner = render::spinner("thinking");
+                self.client.chat(ChatRequest {
+                    messages: &messages,
+                    tools: Some(tools::definitions()),
+                    tools_allowed: round < MAX_TOOL_ROUNDS,
+                    schema: Some(("review", review_schema())),
+                })?
+            };
 
             let calls = message["tool_calls"]
                 .as_array()
@@ -144,7 +147,9 @@ impl Reviewer {
                     .and_then(|a| serde_json::from_str(a).ok())
                     .unwrap_or(Value::Null);
                 let output = if args.is_object() {
-                    render::tool(&tools::describe(name, &args));
+                    let desc = tools::describe(name, &args);
+                    render::tool(&desc);
+                    let _spinner = render::spinner("  │ running");
                     tools::run(snapshot, name, &args)
                 } else {
                     "error: arguments were not a valid JSON object".to_string()
